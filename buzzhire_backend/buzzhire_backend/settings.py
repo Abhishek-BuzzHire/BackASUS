@@ -27,7 +27,7 @@ SECRET_KEY = 'django-insecure-w=_i)5ffq3cf28ks6_h#=&xu%k&fyba3ru8es$--6i2^4ngczg
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ["buzzhire.trueledgrr.com"]
+ALLOWED_HOSTS = ["*"]
 
 GOOGLE_CLIENT_ID = "848116300203-bsq9l9i5gu9tcqc13h2i0jlns8encv9i.apps.googleusercontent.com"
 
@@ -140,7 +140,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Kolkata'
 
 USE_I18N = True
 

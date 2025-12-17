@@ -3,6 +3,8 @@ from rest_framework import serializers
 from .models import Attendance, User
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
+from django.utils import timezone
+
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     @classmethod
     def get_token(cls, user):
@@ -42,12 +44,24 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class AttendanceSerializer(serializers.ModelSerializer):
-    punch_in_time = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
-    punch_out_time = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S", required=False)
-
-    date = serializers.DateField(read_only=True)  # <-- Must be read_only
-
+    punch_in_time = serializers.DateTimeField(read_only=True)
+    punch_out_time = serializers.DateTimeField(read_only=True)
 
     class Meta:
         model = Attendance
         fields = "__all__"
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+
+        if instance.punch_in_time:
+            data["punch_in_time"] = timezone.localtime(
+                instance.punch_in_time
+            ).strftime("%Y-%m-%d %H:%M:%S")
+
+        if instance.punch_out_time:
+            data["punch_out_time"] = timezone.localtime(
+                instance.punch_out_time
+            ).strftime("%Y-%m-%d %H:%M:%S")
+
+        return data

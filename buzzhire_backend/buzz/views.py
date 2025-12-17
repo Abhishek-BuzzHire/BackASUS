@@ -1,7 +1,6 @@
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
-from datetime import datetime, date
 from .models import Attendance
 from .serializers import AttendanceSerializer
 from .utils.distance_utils import calculate_distance
@@ -9,17 +8,17 @@ from .constants import BRANCHES, PUNCH_RADIUS
 from rest_framework import status
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from google.auth.exceptions import GoogleAuthError
 from google.oauth2 import id_token
 from google.auth.transport import requests
 from rest_framework_simplejwt.tokens import RefreshToken
-from google.auth.exceptions import InvalidValue
-from datetime import datetime, date
+from datetime import datetime, time
 from django.utils import timezone
-import pytz
-# Create your views here.
 
-# FOR BRANCH DETECT...
+def get_ist_day_range():
+    today = timezone.localdate()
+    start = timezone.make_aware(datetime.combine(today, time.min))
+    end = timezone.make_aware(datetime.combine(today, time.max))
+    return start, end
 
 User = get_user_model()
 
@@ -47,13 +46,13 @@ class GoogleAuthView(APIView):
             user, created = User.objects.get_or_create(
                 email=email,
                 defaults={"name": name,
-                          "lastlogin": datetime.now()}
+                          "lastlogin": timezone.now()}
             )
 
             if not created:
                 user.name = name 
                 user.picture = picture
-                user.lastlogin = datetime.now()
+                user.lastlogin = timezone.now()
                 user.save()
 
             refresh = RefreshToken.for_user(user)
@@ -113,13 +112,17 @@ class PunchInView(APIView):
         user_lon = float(request.data.get("longitude"))
 
         # 1️⃣ Check for today's attendance (latest record)
-        today = date.today()
+        today = timezone.localdate()
+
+        start_of_day, end_of_day = get_ist_day_range()
+
         attendance = Attendance.objects.filter(
             user=user,
-            punch_in_time__date=today
+            punch_in_time__range=(start_of_day, end_of_day)
         ).order_by('-id').first()  # get latest attendance record
 
         # 2️⃣ Find nearest branch
+
         nearest_branch = None
         nearest_distance = float("inf")
         for b in BRANCHES:
@@ -148,7 +151,7 @@ class PunchInView(APIView):
                 }, status=400)
             else:
                 # Punched out before, update with new punch-in
-                attendance.punch_in_time = datetime.now()
+                attendance.punch_in_time = timezone.now()
                 attendance.punch_in_lat = user_lat
                 attendance.punch_in_lon = user_lon
                 attendance.punch_out_time = None  # reset punch out
@@ -160,7 +163,7 @@ class PunchInView(APIView):
             # No attendance today, create new record
             attendance = Attendance.objects.create(
                 user=user,
-                punch_in_time=datetime.now(),
+                punch_in_time=timezone.now(),
                 punch_in_lat=user_lat,
                 punch_in_lon=user_lon
             )
@@ -192,11 +195,13 @@ class PunchOutView(APIView):
         user_lat = float(request.data.get("latitude"))
         user_lon = float(request.data.get("longitude"))
 
+        start_of_day, end_of_day = get_ist_day_range()
+
         # 2️⃣ Find today’s active punch-in
-        today = date.today()
+        today = timezone.localdate()
         attendance = Attendance.objects.filter(
             user=user,
-            punch_in_time__date=today,
+            punch_in_time__range=(start_of_day, end_of_day),
             punch_out_time__isnull=True
         ).first()
 
@@ -228,7 +233,7 @@ class PunchOutView(APIView):
             }, status=400)
 
         # 4️⃣ Save punch-out
-        attendance.punch_out_time = datetime.now()
+        attendance.punch_out_time = timezone.now()
         attendance.punch_out_lat = user_lat
         attendance.punch_out_lon = user_lon
         attendance.save()
@@ -246,12 +251,19 @@ class TodayAttendanceView(APIView):
 
     def get(self, request):
         user = request.user
-        today = date.today()
+        today = timezone.localdate()
+
+        start_of_day = timezone.make_aware(
+            datetime.combine(today, time.min)
+        )
+        end_of_day = timezone.make_aware(
+            datetime.combine(today, time.max)
+        )
 
         # Get latest attendance for today
         attendance = Attendance.objects.filter(
             user=user,
-            punch_in_time__date=today
+            punch_in_time__range=(start_of_day, end_of_day)
         ).order_by('-id').first()
 
         if not attendance:
@@ -267,6 +279,12 @@ class TodayAttendanceView(APIView):
                     "distance": None
                 }
             }, status=200)
+        
+        punch_in_time = timezone.localtime(attendance.punch_in_time)
+        punch_out_time = (
+            timezone.localtime(attendance.punch_out_time)
+            if attendance.punch_out_time else None
+        )
 
         # Determine status flags
         is_punched_in = attendance.punch_in_time is not None
@@ -278,10 +296,10 @@ class TodayAttendanceView(APIView):
         return Response({
             "status": "success",
             "data": {
-                "is_punched_in": is_punched_in and not has_punched_out,
-                "has_punched_out": has_punched_out,
-                "punch_in_time": attendance.punch_in_time,
-                "punch_out_time": attendance.punch_out_time,
+                "is_punched_in": attendance.punch_out_time is None,
+                "has_punched_out": attendance.punch_out_time is not None,
+                "punch_in_time": punch_in_time,
+                "punch_out_time": punch_out_time,
                 "branch": getattr(attendance, "branch_name", None),  # optional, safe
                 "distance": None,   # distance only calculated at punch time
                 "raw": AttendanceSerializer(attendance).data
@@ -294,23 +312,19 @@ class TotalWorkingTimeView(APIView):
 
     def get(self, request):
         user = request.user
-        today = date.today()
+        today = timezone.localdate()
+
+        start_of_day, end_of_day = get_ist_day_range()
 
         attendance = Attendance.objects.filter(
             user=user,
-            punch_in_time__date=today
+            punch_in_time__range=(start_of_day, end_of_day)
         ).order_by("-id").first()
 
-        IST = pytz.timezone("Asia/Kolkata")
-        now_utc = timezone.now()     
-        now_ist = now_utc.astimezone(IST)
+        start = timezone.localtime(attendance.punch_in_time)
+        end = timezone.localtime(attendance.punch_out_time or timezone.now())
 
-        print("Raw Time:", attendance.punch_in_time)
-
-        start = attendance.punch_in_time.replace(tzinfo=None)
-        end = now_ist.replace(tzinfo=None)
-
-        total_seconds = int((end - start).total_seconds())
+        total_seconds = max(0, int((end - start).total_seconds()))
 
         hours = total_seconds // 3600
         minutes = (total_seconds % 3600) // 60
@@ -324,3 +338,75 @@ class TotalWorkingTimeView(APIView):
         return Response({
             "total_working_time": formatted_time
         }, status=200)
+
+
+class AttendanceRangeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        start_date = request.query_params.get("start_date")
+        end_date = request.query_params.get("end_date")
+
+        if not start_date or not end_date:
+            return Response(
+                {
+                    "status": "failed",
+                    "message": "start_date and end_date are required (YYYY-MM-DD)"
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+            end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+        except ValueError:
+            return Response(
+                {
+                    "status": "failed",
+                    "message": "Invalid date format. Use YYYY-MM-DD"
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Fetch all attendance records in range
+        records = Attendance.objects.filter(
+            user=user,
+            punch_in_time__date__range=(start_date, end_date)
+        ).order_by("punch_in_time")
+
+        grouped_data = {}
+
+        for att in records:
+            day = att.punch_in_time.date()
+
+            # Keep latest entry per day (same as TodayAttendanceView logic)
+            grouped_data[day] = att
+
+        response_data = []
+
+        for day, att in grouped_data.items():
+            punch_in = att.punch_in_time
+            punch_out = att.punch_out_time
+
+            working_seconds = None
+            if punch_in and punch_out:
+                working_seconds = int(
+                    (punch_out - punch_in).total_seconds()
+                )
+
+            response_data.append({
+                "date": day,
+                "punch_in_time": punch_in,
+                "punch_out_time": punch_out,
+                "working_seconds": working_seconds
+            })
+
+        return Response(
+            {
+                "status": "success",
+                "data": response_data
+            },
+            status=status.HTTP_200_OK
+        )
