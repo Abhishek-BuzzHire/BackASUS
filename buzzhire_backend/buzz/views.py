@@ -152,7 +152,6 @@ class PunchInView(APIView):
                 }, status=400)
             else:
                 # Punched out before, update with new punch-in
-                attendance.date = timezone.localdate()
                 attendance.punch_in_time = timezone.now()
                 attendance.punch_in_lat = user_lat
                 attendance.punch_in_lon = user_lon
@@ -165,9 +164,6 @@ class PunchInView(APIView):
             # No attendance today, create new record
             attendance = Attendance.objects.create(
                 user=user,
-                branch_name= nearest_branch["name"],
-                work_status="WFO",
-                date = timezone.localdate(),
                 punch_in_time=timezone.now(),
                 punch_in_lat=user_lat,
                 punch_in_lon=user_lon
