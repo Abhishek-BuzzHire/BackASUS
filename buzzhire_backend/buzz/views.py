@@ -11,8 +11,9 @@ from django.contrib.auth import get_user_model
 from google.oauth2 import id_token
 from google.auth.transport import requests
 from rest_framework_simplejwt.tokens import RefreshToken
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 
 def get_ist_day_range():
     today = timezone.localdate()
@@ -151,6 +152,7 @@ class PunchInView(APIView):
                 }, status=400)
             else:
                 # Punched out before, update with new punch-in
+                attendance.date = timezone.localdate()
                 attendance.punch_in_time = timezone.now()
                 attendance.punch_in_lat = user_lat
                 attendance.punch_in_lon = user_lon
@@ -163,6 +165,9 @@ class PunchInView(APIView):
             # No attendance today, create new record
             attendance = Attendance.objects.create(
                 user=user,
+                branch_name= nearest_branch["name"],
+                work_status="WFO",
+                date = timezone.localdate(),
                 punch_in_time=timezone.now(),
                 punch_in_lat=user_lat,
                 punch_in_lon=user_lon
@@ -340,73 +345,172 @@ class TotalWorkingTimeView(APIView):
         }, status=200)
 
 
-class AttendanceRangeView(APIView):
+
+def seconds_to_hh_mm(seconds):
+    if seconds is None:
+        return None
+
+    total_minutes = seconds // 60
+    hours = total_minutes // 60
+    minutes = total_minutes % 60
+
+    return f"{hours}:{minutes:02}"
+
+class TotalHoursView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         user = request.user
 
-        start_date = request.query_params.get("start_date")
-        end_date = request.query_params.get("end_date")
+        start_date = parse_date(request.query_params.get("start_date"))
+        end_date = parse_date(request.query_params.get("end_date"))
 
-        if not start_date or not end_date:
+        if not start_date or not end_date or start_date > end_date:
             return Response(
-                {
-                    "status": "failed",
-                    "message": "start_date and end_date are required (YYYY-MM-DD)"
-                },
-                status=status.HTTP_400_BAD_REQUEST
+                {"status": "failed", "message": "Invalid date range"},
+                status=400
             )
 
-        try:
-            start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
-            end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
-        except ValueError:
-            return Response(
-                {
-                    "status": "failed",
-                    "message": "Invalid date format. Use YYYY-MM-DD"
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # Fetch all attendance records in range
-        records = Attendance.objects.filter(
+        # Fetch attendance records
+        attendances = Attendance.objects.filter(
             user=user,
-            punch_in_time__date__range=(start_date, end_date)
-        ).order_by("punch_in_time")
+            date__range=(start_date, end_date)
+        ).order_by("date")
 
-        grouped_data = {}
+        # 1️⃣ Prepare all dates
+        result = {}
+        current_date = start_date
+        while current_date <= end_date:
+            result[current_date.isoformat()] = {
+                "date": current_date.isoformat(),
+                "punch_in_time": None,
+                "punch_out_time": None,
+                "working_time": None
+            }
+            current_date += timedelta(days=1)
 
-        for att in records:
-            day = att.punch_in_time.date()
+        # 2️⃣ Fill attendance data
+        for att in attendances:
+            local_punch_in = timezone.localtime(att.punch_in_time)
+            day = local_punch_in.date().isoformat()
 
-            # Keep latest entry per day (same as TodayAttendanceView logic)
-            grouped_data[day] = att
+            punch_out = (
+                timezone.localtime(att.punch_out_time)
+                if att.punch_out_time else None
+            )
+
+            working_time = None
+            if punch_out:
+                total_seconds = int((punch_out - local_punch_in).total_seconds())
+                hours = total_seconds // 3600
+                minutes = (total_seconds % 3600) // 60
+                working_time = f"{hours}:{minutes:02}"
+
+            result[day] = {
+                "date": day,
+                "punch_in_time": local_punch_in.strftime("%H:%M"),
+                "punch_out_time": punch_out.strftime("%H:%M") if punch_out else None,
+                "working_time": working_time
+            }
+
+        return Response({
+            "status": "success",
+            "data": list(result.values())
+        }, status=200)
+
+
+################################################
+# TOTAL DETAILS OF ALL EMPS FOR SELECTING DATES #
+################################################
+
+
+class AdminAttendanceReportView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # 1️⃣ Read start_date (MANDATORY)
+        start_date = parse_date(request.query_params.get("start_date"))
+        if not start_date:
+            return Response(
+                {"error": "start_date is required"},
+                status=400
+            )
+
+        # 2️⃣ Read end_date (OPTIONAL)
+        end_date_param = request.query_params.get("end_date")
+        end_date = parse_date(end_date_param) if end_date_param else start_date
+
+        if start_date > end_date:
+            return Response(
+                {"error": "start_date cannot be greater than end_date"},
+                status=400
+            )
+
+        # 3️⃣ Read optional employee IDs
+        ids_param = request.query_params.get("ids")
+        if ids_param:
+            ids_list = [int(i) for i in ids_param.split(",") if i.isdigit()]
+            employees = User.objects.filter(id__in=ids_list, is_staff=False)
+        else:
+            employees = User.objects.filter(is_staff=False)
 
         response_data = []
 
-        for day, att in grouped_data.items():
-            punch_in = att.punch_in_time
-            punch_out = att.punch_out_time
+        # 4️⃣ Loop employees
+        for employee in employees:
+            employee_data = {
+                "emp_id": employee.id,
+                "employee_name": employee.name,
+                "attendance": []
+            }
 
-            working_seconds = None
-            if punch_in and punch_out:
-                working_seconds = int(
-                    (punch_out - punch_in).total_seconds()
+            current_date = start_date
+            while current_date <= end_date:
+
+                # IST day range
+                day_start = timezone.make_aware(
+                    datetime.combine(current_date, time.min)
+                )
+                day_end = timezone.make_aware(
+                    datetime.combine(current_date, time.max)
                 )
 
-            response_data.append({
-                "date": day,
-                "punch_in_time": punch_in,
-                "punch_out_time": punch_out,
-                "working_seconds": working_seconds
-            })
+                attendance = Attendance.objects.filter(
+                    user=employee,
+                    punch_in_time__range=(day_start, day_end)
+                ).order_by("-id").first()
 
-        return Response(
-            {
-                "status": "success",
-                "data": response_data
-            },
-            status=status.HTTP_200_OK
-        )
+                punch_in = None
+                punch_out = None
+                total_time = None
+
+                if attendance:
+                    if attendance.punch_in_time:
+                        punch_in = timezone.localtime(attendance.punch_in_time)
+
+                    if attendance.punch_out_time:
+                        punch_out = timezone.localtime(attendance.punch_out_time)
+
+                    if punch_in and punch_out:
+                        total_seconds = int((punch_out - punch_in).total_seconds())
+                        hours = total_seconds // 3600
+                        minutes = (total_seconds % 3600) // 60
+                        total_time = f"{hours}:{minutes:02}"
+
+                employee_data["attendance"].append({
+                    "date": current_date.isoformat(),
+                    "punch_in": punch_in.strftime("%H:%M") if punch_in else None,
+                    "punch_out": punch_out.strftime("%H:%M") if punch_out else None,
+                    "total_time": total_time
+                })
+
+                current_date += timedelta(days=1)
+
+            response_data.append(employee_data)
+
+        return Response({
+            "status": "success",
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "emps": response_data
+        }, status=status.HTTP_200_OK)

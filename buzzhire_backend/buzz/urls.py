@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import PunchInView, PunchOutView, TodayAttendanceView, TotalWorkingTimeView, AttendanceRangeView
+from .views import PunchInView, PunchOutView, TodayAttendanceView, TotalWorkingTimeView, TotalHoursView, AdminAttendanceReportView
 from .views import GoogleAuthView
 
 
@@ -11,5 +11,6 @@ urlpatterns = [
     path("punch-out/", PunchOutView.as_view(), name="punch-out"),
     path("today/", TodayAttendanceView.as_view()),
     path('total-working-time/', TotalWorkingTimeView.as_view()),
-    path("attendance/range/", AttendanceRangeView.as_view()),
+    path("total-hours/", TotalHoursView.as_view()),
+    path("api/admin/emp-total-details/", AdminAttendanceReportView.as_view(), name = "emps-total-details"),
 ]

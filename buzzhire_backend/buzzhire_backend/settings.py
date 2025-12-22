@@ -185,5 +185,10 @@ WHITELISTED_EMAILS = [
     "jyoti@buzzhire.in",
     "nishtha@buzzhire.in",
     "saurabh@buzzhire.in",
-    "neha.sharma@buzzhire.in"
+    "neha.sharma@buzzhire.in",
+    "shivam.buzzhire@gmail.com",
+    "mahika.buzzhire@gmail.com",
+    "akshita@buzzhire.in",
+    "nodsandeep@gmail.com",
+    "mahika@buzzhire.in"
 ]

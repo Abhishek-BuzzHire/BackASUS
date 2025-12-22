@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Attendance, User
+from .models import Attendance, User, WFHRequest
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from django.utils import timezone
@@ -33,19 +33,13 @@ class UserSerializer(serializers.ModelSerializer):
 # ATTENDANCE SERIALIZER
 # =====================================================
 
-# class AttendanceSerializer(serializers.ModelSerializer):
-#     class Meta:
-#         model = Attendance
-#         fields = "__all__"
-
-
-
-
 
 
 class AttendanceSerializer(serializers.ModelSerializer):
     punch_in_time = serializers.DateTimeField(read_only=True)
     punch_out_time = serializers.DateTimeField(read_only=True)
+
+    date = serializers.DateField(read_only=True)
 
     class Meta:
         model = Attendance
@@ -65,3 +59,29 @@ class AttendanceSerializer(serializers.ModelSerializer):
             ).strftime("%Y-%m-%d %H:%M:%S")
 
         return data
+
+
+
+class WFHRequestSerializer(serializers.ModelSerializer): 
+    # readable fields (response only)
+    user_name = serializers.CharField(source="user.name", read_only=True)
+    user_email = serializers.EmailField(source="user.email", read_only=True)
+
+    class Meta:
+        model = WFHRequest
+        fields = [
+            "id",
+            "user",          # POST ke time user_id
+            "user_name",     # response ke time
+            "user_email",    # response ke time
+            "date",
+            "status",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "status",
+            "created_at",
+            "updated_at",
+        ]
+
