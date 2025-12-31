@@ -12,7 +12,22 @@ class UserManager(BaseUserManager):
         user = self.model(email=email, **extra_fields)
         user.set_password(password)
         user.save()
+
+        from buzz.models import EmployeeLeaveBucket
+        
+        EmployeeLeaveBucket.objects.get_or_create(
+        user=user,
+        defaults={
+            "total_leave": 18,
+            "taken_leave": 0,
+            "remaining_leave": 18
+        }
+    )
+
+
         return user
+    
+    
 
     def create_superuser(self, email, password, **extra_fields):
         extra_fields.setdefault('is_staff', True)
