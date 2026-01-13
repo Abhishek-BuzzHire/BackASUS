@@ -23,3 +23,19 @@ def mark_leave_attendance(user, start_date, end_date):
             )
 
         current_date += timedelta(days=1)
+
+
+def seconds_to_hh_mm(total_seconds):
+    if total_seconds is None:
+        return None
+
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    return f"{hours}:{minutes:02}"
+
+
+def seconds_to_decimal_hours(total_seconds):
+    if total_seconds is None:
+        return None
+
+    return round(total_seconds / 3600, 2)

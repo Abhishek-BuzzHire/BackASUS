@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import PunchInView, PunchOutView, TodayAttendanceView, TotalWorkingTimeView, TotalHoursView, AdminAttendanceReportView, CreateAttendanceRegularizationRequest, AdminCorrectionDetail, AdminApproveRejectCorrection, AdminAttendanceCorrectionList, EmployeeAttendanceCorrectionRequests, EmployeeCancelAttendanceCorrectionRequest, AdminLeaveListView, AdminLeaveActionView, ApplyLeaveView, EmployeeLeaveSummaryView, EmployeeWFHRequestsView, ApplyWFHView, AdminWFHListView, AdminWFHActionView
+from .views import PunchInView, PunchOutView, TodayAttendanceView, TotalWorkingTimeView, TotalHoursView, AdminAttendanceReportView, CreateAttendanceRegularizationRequest, AdminCorrectionDetail, AdminApproveRejectCorrection, AdminAttendanceCorrectionList, EmployeeAttendanceCorrectionRequests, EmployeeCancelAttendanceCorrectionRequest, AdminLeaveListView, AdminLeaveActionView, ApplyLeaveView, EmployeeLeaveSummaryView, EmployeeWFHRequestsView, ApplyWFHView, AdminWFHListView, AdminWFHActionView, AdminCompanyWorkingRulesView,AdminCompanyWorkingRulesDetailView, AdminHolidayListCreateView, AdminHolidayDetailView, AdminHolidayOverrideListCreateView, AdminHolidayOverrideDeleteView
 from .views import GoogleAuthView
 
 
@@ -42,4 +42,17 @@ urlpatterns = [
     path("wfh/admin/requests/", AdminWFHListView.as_view(), name="admin-wfh-list"),
 
     path("wfh/admin/action/<int:wfh_id>/", AdminWFHActionView.as_view(), name="admin-wfh-action"),
+
+    # Working rules
+    path("admin/working-rules/", AdminCompanyWorkingRulesView.as_view()),
+    path("admin/working-rules/<int:rule_id>/", AdminCompanyWorkingRulesDetailView.as_view()),
+
+    # Holidays
+    path("admin/holidays/", AdminHolidayListCreateView.as_view()),
+    path("admin/holidays/<int:holiday_id>/", AdminHolidayDetailView.as_view()),
+
+    # Overrides
+    path("admin/overrides/", AdminHolidayOverrideListCreateView.as_view()),
+    path("admin/overrides/<int:override_id>/", AdminHolidayOverrideDeleteView.as_view()),
+
 ]

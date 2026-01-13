@@ -1,9 +1,11 @@
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
-from .models import Attendance, AttendanceCorrectionRequest, LeaveRequest, EmployeeLeaveBucket, WFHRequest
-from .serializers import AttendanceSerializer, WFHRequestSerializer
+from .models import Attendance, AttendanceCorrectionRequest, LeaveRequest, EmployeeLeaveBucket, WFHRequest, CompanyWorkingRules, CompanyHoliday, HolidayOverride
+from .serializers import AttendanceSerializer, WFHRequestSerializer, CompanyWorkingRulesSerializer, CompanyHolidaySerializer, HolidayOverrideSerializer
+from .utils.attendance_utils import seconds_to_hh_mm, seconds_to_decimal_hours
 from .utils.distance_utils import calculate_distance
+from .utils.company_calendar import is_working_day
 from .constants import BRANCHES, PUNCH_RADIUS
 from rest_framework import status
 from django.conf import settings
@@ -16,6 +18,39 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django.db.models import Sum
 from django.db import transaction
+import calendar
+
+
+def get_expected_work_hours(start_date, end_date):
+    """
+    Returns expected working hours between two dates (inclusive)
+    based on company rules and holiday calendar
+    """
+
+    if start_date > end_date:
+        raise ValueError("start_date cannot be greater than end_date")
+
+    rules = CompanyWorkingRules.objects.first()
+
+    if not rules:
+        # fallback: assume 8 hours/day
+        raise ValueError("No daily work hours are mentioned")
+    else:
+        daily_hours = float(rules.daily_work_hours)
+        daily_seconds = int(daily_hours * 3600)   # 9.5 → 34200 seconds
+
+    total_seconds  = 0
+    current_date = start_date
+
+    while current_date <= end_date:
+
+        if is_working_day(current_date):
+            total_seconds += daily_seconds
+
+        current_date += timedelta(days=1)
+
+    return seconds_to_hh_mm(total_seconds)
+
 
 def get_ist_day_range():
     today = timezone.localdate()
@@ -47,8 +82,9 @@ class GoogleAuthView(APIView):
                 return Response({"error": "Not allowed"}, status=403)
 
             user, created = User.objects.get_or_create(
-                email=email,
+                username=email,
                 defaults={"name": name,
+                          "email": email,
                           "lastlogin": timezone.now()}
             )
 
@@ -348,15 +384,15 @@ class TotalWorkingTimeView(APIView):
 
 
 
-def seconds_to_hh_mm(seconds):
-    if seconds is None:
-        return None
+# def seconds_to_hh_mm(seconds):
+#     if seconds is None:
+#         return None
 
-    total_minutes = seconds // 60
-    hours = total_minutes // 60
-    minutes = total_minutes % 60
+#     total_minutes = seconds // 60
+#     hours = total_minutes // 60
+#     minutes = total_minutes % 60
 
-    return f"{hours}:{minutes:02}"
+#     return f"{hours}:{minutes:02}"
 
 class TotalHoursView(APIView):
     permission_classes = [IsAuthenticated]
@@ -458,6 +494,8 @@ class AdminAttendanceReportView(APIView):
 
         response_data = []
 
+        total_hours = get_expected_work_hours(start_date, end_date)
+
         # 4️⃣ Loop employees
         for employee in employees:
             employee_data = {
@@ -495,15 +533,15 @@ class AdminAttendanceReportView(APIView):
 
                     if punch_in and punch_out:
                         total_seconds = int((punch_out - punch_in).total_seconds())
-                        hours = total_seconds // 3600
-                        minutes = (total_seconds % 3600) // 60
-                        total_time = f"{hours}:{minutes:02}"
+                        total_time = seconds_to_hh_mm(total_seconds)
+                        # decimal_hours = seconds_to_decimal_hours(total_seconds)
 
                 employee_data["attendance"].append({
                     "date": current_date.isoformat(),
                     "punch_in": punch_in.strftime("%H:%M") if punch_in else None,
                     "punch_out": punch_out.strftime("%H:%M") if punch_out else None,
-                    "total_time": total_time
+                    "total_time": total_time,
+                    # "decimal_hours": decimal_hours
                 })
 
                 current_date += timedelta(days=1)
@@ -514,7 +552,8 @@ class AdminAttendanceReportView(APIView):
             "status": "success",
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
-            "emps": response_data
+            "emps": response_data,
+            "expected_total_hours": total_hours
         }, status=status.HTTP_200_OK)
 
 
@@ -874,6 +913,17 @@ class ApplyLeaveView(APIView):
                 {"message": "Cannot apply leave for past dates"},
                 status=400
             )
+        
+        if LeaveRequest.objects.filter(
+            user=user,
+            start_date=start_date,
+            end_date=end_date,
+            status__in=["PENDING", "APPROVED"]
+        ).exists():
+            return Response(
+                {"message": "Leave already applied for these dates"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         # 4️⃣ Calculate total days (inclusive)
         total_days = (end_date - start_date).days + 1
@@ -897,8 +947,6 @@ class ApplyLeaveView(APIView):
             },
             status=status.HTTP_201_CREATED
         )
-    
-
 
 class EmployeeLeaveSummaryView(APIView):
     permission_classes = [IsAuthenticated]
@@ -1049,7 +1097,7 @@ class AdminLeaveActionView(APIView):
 
                 # ✅ Approve leave
                 leave.status = "APPROVED"
-                leave.save(update_fields=["status"])
+                leave.save(update_fields=["status","updated_at"])
 
             return Response(
                 {
@@ -1066,7 +1114,7 @@ class AdminLeaveActionView(APIView):
         #  REJECT LEAVE
         # ===============================
         leave.status = "REJECTED"
-        leave.save(update_fields=["status"])
+        leave.save(update_fields=["status","updated_at"])
 
         return Response(
             {"message": "Leave rejected successfully"},
@@ -1262,7 +1310,7 @@ class AdminWFHActionView(APIView):
         # ===============================
         if action == "REJECT":
             wfh.status = "REJECTED"
-            wfh.save(update_fields=["status"])
+            wfh.save(update_fields=["status","updated_at"])
 
             return Response(
                 {"message": "WFH request rejected"},
@@ -1275,21 +1323,21 @@ class AdminWFHActionView(APIView):
         with transaction.atomic():
 
             wfh.status = "APPROVED"
-            wfh.save(update_fields=["status"])
+            wfh.save(update_fields=["status", "updated_at"])
 
             wfh_date = wfh.date
             today = timezone.localdate()
 
             # Past-date safety (do not backfill attendance)
-            if wfh_date < today:
-                return Response(
-                    {
-                        "message": "WFH approved (past date – attendance not created)",
-                        "attendance_created": False,
-                        "attendance_date": wfh_date
-                    },
-                    status=status.HTTP_200_OK
-                )
+            # if wfh_date < today:
+            #     return Response(
+            #         {
+            #             "message": "WFH approved (past date – attendance not created)",
+            #             "attendance_created": False,
+            #             "attendance_date": wfh_date
+            #         },
+            #         status=status.HTTP_200_OK
+            #     )
 
             # Fixed WFH punch timings (IST)
             punch_in = timezone.make_aware(
@@ -1385,3 +1433,171 @@ class AdminWFHListView(APIView):
             },
             status=status.HTTP_200_OK
         )
+    
+
+class AdminCompanyWorkingRulesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    # 🔐 Admin-only access
+        # if request.user.role != "ADMIN":
+        #     return Response(
+        #         {"error": "Forbidden"},
+        #         status=status.HTTP_403_FORBIDDEN
+        #     )
+
+    def get(self, request):
+        rules = CompanyWorkingRules.objects.all()
+        serializer = CompanyWorkingRulesSerializer(rules, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = CompanyWorkingRulesSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=201)
+        return Response(serializer.errors, status=400)
+    
+
+
+class AdminCompanyWorkingRulesDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    # 🔐 Admin-only access
+        # if request.user.role != "ADMIN":
+        #     return Response(
+        #         {"error": "Forbidden"},
+        #         status=status.HTTP_403_FORBIDDEN
+        #     )
+
+    def put(self, request, rule_id):
+        rule = CompanyWorkingRules.objects.filter(id=rule_id).first()
+        if not rule:
+            return Response({"error": "Rule not found"}, status=404)
+
+        serializer = CompanyWorkingRulesSerializer(rule, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=400)
+    
+
+
+class AdminHolidayListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    # 🔐 Admin-only access
+        # if request.user.role != "ADMIN":
+        #     return Response(
+        #         {"error": "Forbidden"},
+        #         status=status.HTTP_403_FORBIDDEN
+        #     )
+
+    def get(self, request):
+        holidays = CompanyHoliday.objects.all().order_by("date")
+        serializer = CompanyHolidaySerializer(holidays, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = CompanyHolidaySerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(created_by=request.user)
+            return Response(serializer.data, status=201)
+        return Response(serializer.errors, status=400)
+
+
+class AdminHolidayDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    # 🔐 Admin-only access
+        # if request.user.role != "ADMIN":
+        #     return Response(
+        #         {"error": "Forbidden"},
+        #         status=status.HTTP_403_FORBIDDEN
+        #     )
+
+    def put(self, request, holiday_id):
+        holiday = CompanyHoliday.objects.filter(id=holiday_id).first()
+        if not holiday:
+            return Response({"error": "Holiday not found"}, status=404)
+
+        serializer = CompanyHolidaySerializer(
+            holiday, data=request.data, partial=True
+        )
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(serializer.errors, status=400)
+
+    def delete(self, request, holiday_id):
+        holiday = CompanyHoliday.objects.filter(id=holiday_id).first()
+        if not holiday:
+            return Response({"error": "Holiday not found"}, status=404)
+
+        holiday.delete()
+        return Response({"message": "Holiday deleted successfully"})
+    
+
+
+class AdminHolidayOverrideListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    # 🔐 Admin-only access
+        # if request.user.role != "ADMIN":
+        #     return Response(
+        #         {"error": "Forbidden"},
+        #         status=status.HTTP_403_FORBIDDEN
+        #     )
+
+    def get(self, request):
+        overrides = HolidayOverride.objects.all().order_by("date")
+        serializer = HolidayOverrideSerializer(overrides, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = HolidayOverrideSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(created_by=request.user)
+            return Response(serializer.data, status=201)
+        return Response(serializer.errors, status=400)
+
+
+class AdminHolidayOverrideDeleteView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    # 🔐 Admin-only access
+        # if request.user.role != "ADMIN":
+        #     return Response(
+        #         {"error": "Forbidden"},
+        #         status=status.HTTP_403_FORBIDDEN
+        #     )
+
+    def delete(self, request, override_id):
+        override = HolidayOverride.objects.filter(id=override_id).first()
+        if not override:
+            return Response({"error": "Override not found"}, status=404)
+
+        override.delete()
+        return Response({"message": "Override deleted successfully"})
+
+
+# Weekly Auto Calculated Work hours
+
+# def get_expected_weekly_hours(start_date):
+#     """
+#     start_date should be the first day of the week (Monday ideally)
+#     """
+#     end_date = start_date + datetime.timedelta(days=6)
+#     return get_expected_work_hours(start_date, end_date)
+
+
+# Monthly Auto Calculated Work hours
+
+# def get_expected_monthly_hours(year, month):
+#     start_date = datetime.date(year, month, 1)
+#     last_day = calendar.monthrange(year, month)[1]
+#     end_date = datetime.date(year, month, last_day)
+
+#     return get_expected_work_hours(start_date, end_date)
+
+

@@ -27,7 +27,7 @@ SECRET_KEY = 'django-insecure-w=_i)5ffq3cf28ks6_h#=&xu%k&fyba3ru8es$--6i2^4ngczg
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ["*"]
+ALLOWED_HOSTS = ["*","http://localhost:3000" ,"http://192.168.1.123:3000",]
 
 GOOGLE_CLIENT_ID = "848116300203-bsq9l9i5gu9tcqc13h2i0jlns8encv9i.apps.googleusercontent.com"
 
@@ -67,6 +67,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://192.168.1.17:3000",
+    "http://192.168.1.123:3000",
     "https://clockinout-ten.vercel.app"
 ]
 
